@@ -59,11 +59,18 @@ public class ElectionApp {
         LeaderSelector leaderSelector = new LeaderSelector(this.curatorFramework, this.electionPath, new LeaderSelectorListenerAdapter() {
             private WorkingThread workingThread;
             private boolean shouldStop;
+            private boolean isLeader;
+            private boolean stateChangeWorking;
 
             public void takeLeadership(CuratorFramework client) throws Exception {
                 //定义成功抢占主节点（leadership）之后的操作
                 LOG.info("take leadership!");
                 shouldStop = false;
+                isLeader = true;
+                //如果stateChanged方法正在执行，那么等待其执行完毕
+                while (stateChangeWorking) {
+                    TimeUnit.SECONDS.sleep(1);
+                }
                 workingThread = new WorkingThread();
                 workingThread.start();
                 //防止退出
@@ -77,9 +84,24 @@ public class ElectionApp {
                     super.stateChanged(client, newState);
                 } catch (CancelLeadershipException e) {
                     //响应失去主节点（leadership）的情况：停止线程执行
+                    if (!isLeader) {
+                        return;
+                    }
                     LOG.info("CancelLeadershipException,try to release leadership");
-                    workingThread.stopGracefully();
+                    //防止资源再次回收
+                    if (stateChangeWorking) {
+                        return;
+                    }
+                    //标记正在回收
+                    stateChangeWorking = true;
+                    //设置takeLeadership方法退出标志
                     shouldStop = true;
+                    //停止工作任务
+                    workingThread.stopGracefully();
+                    //设置leadership身份标识为false（因为不是leader也可以进入到本方法中，因此要设置本标志，以便用isLeader过滤掉非leader的动作）
+                    isLeader = false;
+                    //设置本方法执行完毕标志，以便让takeLeadership方法执行任务
+                    stateChangeWorking = false;
                     LOG.info("release leadership successfully");
                 }
             }
